@@ -11,3 +11,8 @@ wheels/
 
 # Environment variables
 .env
+
+# DB
+db.sqlite3
+# DB backups
+db.sqlite3.bak
