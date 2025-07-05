@@ -194,3 +194,28 @@ class Database:
             counts[status] = count
         counts["pending_verifications"] = pending_count
         return counts
+
+    def get_blocked_users(self) -> list[dict[str, Any]]:
+        """Get list of blocked users"""
+        conn = sqlite3.connect(self.db_path)
+        cursor = conn.cursor()
+        cursor.execute("""
+            SELECT user_id, user_name, username, created_at
+            FROM users
+            WHERE status = 'blocked'
+            ORDER BY created_at DESC
+        """)
+        results = cursor.fetchall()
+        conn.close()
+
+        blocked_users = []
+        for row in results:
+            blocked_users.append(
+                {
+                    "user_id": row[0],
+                    "user_name": row[1],
+                    "username": row[2],
+                    "created_at": row[3],
+                }
+            )
+        return blocked_users

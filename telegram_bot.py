@@ -103,6 +103,20 @@ class TelegramBot:
             )
             return response.json()
 
+    async def kick_chat_member(self, chat_id: int, user_id: int) -> dict[str, Any]:
+        """Kick a user from the chat"""
+        async with httpx.AsyncClient() as client:
+            response = await client.post(
+                f"{self.base_url}/banChatMember",
+                json={
+                    "chat_id": chat_id,
+                    "user_id": user_id,
+                },
+            )
+            result = response.json()
+            print(f"User kick attempt: {response.status_code}, Response: {result}")
+            return result
+
     async def get_chat_administrators(self, chat_id: int) -> list[dict[str, Any]]:
         """Get list of chat administrators"""
         async with httpx.AsyncClient() as client:
@@ -111,6 +125,26 @@ class TelegramBot:
             )
             result = response.json()
             return result.get("result", [])
+
+    async def get_chat_members_count(self, chat_id: int) -> int:
+        """Get the number of members in a chat"""
+        async with httpx.AsyncClient() as client:
+            response = await client.get(
+                f"{self.base_url}/getChatMembersCount", params={"chat_id": chat_id}
+            )
+            result = response.json()
+            return result.get("result", 0)
+
+    async def is_user_admin(self, chat_id: int, user_id: int) -> bool:
+        """Check if user is an administrator in the chat"""
+        try:
+            admins = await self.get_chat_administrators(chat_id)
+            for admin in admins:
+                if admin["user"]["id"] == user_id:
+                    return True
+            return False
+        except Exception:
+            return False
 
     async def notify_admins(self, chat_id: int, message: str) -> None:
         """Send a message to all administrators"""
@@ -154,15 +188,9 @@ class TelegramBot:
             user_name=user_name, username=username_display
         )
         print(f"📧 Public message: {public_message}")
+        await self.kick_chat_member(chat_id, user_id)
+
         await self.send_message(chat_id, public_message)
-
-        print("👮‍♂️ Notifying admins about bot...")
-        # Notify administrators privately
-        admin_message = self.settings.bot_admin_notification.format(
-            user_name=user_name, username=username_display, user_id=user_id
-        ).replace("\\n", "\n")
-
-        await self.notify_admins(chat_id, admin_message)
 
     def generate_captcha(self) -> tuple[str, str]:
         """Generate a simple math captcha question"""
@@ -272,6 +300,11 @@ class TelegramBot:
         if is_bot:
             return
 
+        # Check for admin commands
+        if text.startswith("/"):
+            await self.handle_command(message)
+            return
+
         # Check if user is pending verification
         user_data = self.db.get_pending_verification(user_id)
         if user_data:
@@ -295,6 +328,75 @@ class TelegramBot:
                         question=user_data["question"]
                     ).replace("\\n", "\n"),
                 )
+
+    async def handle_command(self, message: dict[str, Any]) -> None:
+        """Handle bot commands"""
+        user_id = message["from"]["id"]
+        chat_id = message["chat"]["id"]
+        text = message.get("text", "")
+
+        # Parse command
+        command = text.split()[0].lower()
+
+        if command == "/banned" or command == "/listbanned":
+            await self.handle_list_banned_command(chat_id, user_id)
+
+    async def handle_list_banned_command(self, chat_id: int, user_id: int) -> None:
+        """Handle the /banned command to list blocked users"""
+        # Check if user is admin
+        if not await self.is_user_admin(chat_id, user_id):
+            await self.send_message(
+                chat_id, "❌ Only administrators can use this command."
+            )
+            return
+
+        # Get blocked users
+        blocked_users = self.db.get_blocked_users()
+
+        if not blocked_users:
+            await self.send_message(chat_id, "✅ No banned users found.")
+            return
+
+        # Format the message
+        message_lines = ["🚫 Banned Users List:\n\n"]
+
+        for i, user in enumerate(blocked_users, 1):
+            username_display = (
+                f"@{user['username']}" if user["username"] else "sin_username"
+            )
+            user_line = f"{i}. {user['user_name']} ({username_display})\n"
+            user_line += f"   ID: {user['user_id']}\n"
+            user_line += f"   Banned: {user['created_at'][:19]}\n\n"
+            message_lines.append(user_line)
+
+        # Split message if too long (Telegram limit is 4096 characters)
+        full_message = "".join(message_lines)
+
+        if len(full_message) <= 4096:
+            await self.send_message(chat_id, full_message)
+        else:
+            # Split into chunks
+            chunks = []
+            current_chunk = "🚫 Banned Users List:\n\n"
+
+            for line in message_lines[1:]:  # Skip the header
+                if len(current_chunk + line) > 4000:  # Leave some buffer
+                    chunks.append(current_chunk)
+                    current_chunk = line
+                else:
+                    current_chunk += line
+
+            if current_chunk:
+                chunks.append(current_chunk)
+
+            # Send chunks
+            for i, chunk in enumerate(chunks):
+                if i == 0:
+                    await self.send_message(chat_id, chunk)
+                else:
+                    await self.send_message(
+                        chat_id, f"🚫 Banned Users List (continued):\n\n{chunk}"
+                    )
 
     async def handle_update(self, update: dict[str, Any]) -> None:
         """Handle a single update from Telegram"""
