@@ -2,8 +2,13 @@ import asyncio
 import random
 from typing import Any
 import httpx
+from rich.console import Console
 from database import Database
+from bot_detection import BotDetector
+from commands import CommandHandler
 from settings import Settings
+
+console = Console()
 
 
 class TelegramBot:
@@ -14,10 +19,14 @@ class TelegramBot:
         self.db = Database(settings.database_path)
         self.bot_user_id: int | None = None
 
+        # Initialize bot detector and command handler
+        self.bot_detector = BotDetector(token)
+        self.command_handler = CommandHandler(self, self.db, self.bot_detector)
+
         # Print database statistics on startup
         counts = self.db.get_user_counts()
-        print(
-            f"📊 Database loaded: {counts['verified']} verified, {counts['blocked']} blocked, {counts['pending_verifications']} pending"
+        console.print(
+            f"[blue]📊 Database loaded:[/blue] [green]{counts['verified']} verified[/green], [red]{counts['blocked']} blocked[/red], [yellow]{counts['pending_verifications']} pending[/yellow]"
         )
 
     async def get_updates(self, offset: int = 0) -> list[dict[str, Any]]:
@@ -114,7 +123,9 @@ class TelegramBot:
                 },
             )
             result = response.json()
-            print(f"User kick attempt: {response.status_code}, Response: {result}")
+            console.print(
+                f"[yellow]User kick attempt:[/yellow] [cyan]{response.status_code}[/cyan], Response: [dim]{result}[/dim]"
+            )
             return result
 
     async def get_chat_administrators(self, chat_id: int) -> list[dict[str, Any]]:
@@ -159,35 +170,43 @@ class TelegramBot:
                     except Exception as e:
                         # Admin might have blocked the bot or doesn't allow DMs
                         # Log the error for debugging purposes
-                        print(f"Error sending message to admin {admin_id}: {e}")
+                        console.print(
+                            f"[red]Error sending message to admin {admin_id}:[/red] [dim]{e}[/dim]"
+                        )
                         pass
         except Exception as e:
-            print(f"Error notifying admins: {e}")
+            console.print(f"[red]Error notifying admins:[/red] [dim]{e}[/dim]")
 
     async def handle_bot_user(
         self, chat_id: int, user_id: int, user_name: str, username: str | None = None
     ) -> None:
         """Handle bot users - restrict and notify admins"""
-        print(f"🚨 HANDLE_BOT_USER called for: {user_name} (ID: {user_id})")
+        console.print(
+            f"[red bold]🚨 HANDLE_BOT_USER called for:[/red bold] [yellow]{user_name}[/yellow] [dim](ID: {user_id})[/dim]"
+        )
 
         if self.db.is_user_blocked(user_id):
-            print(f"⚠️ Bot {user_name} already in blocked list, skipping...")
+            console.print(
+                f"[yellow]⚠️ Bot {user_name} already in blocked list, skipping...[/yellow]"
+            )
             return
 
-        print(f"🔒 Restricting bot user: {user_name}")
+        console.print(
+            f"[red]🔒 Restricting bot user:[/red] [yellow]{user_name}[/yellow]"
+        )
         # Restrict the bot user
         await self.restrict_user(chat_id, user_id)
         self.db.add_blocked_user(user_id, user_name, username)
 
         # Format username for display
         username_display = username if username else "sin_username"
-        print("📢 Sending public bot detection message...")
+        console.print("[blue]📢 Sending public bot detection message...[/blue]")
 
         # Send public message about bot detection
         public_message = self.settings.bot_detected_message.format(
             user_name=user_name, username=username_display
         )
-        print(f"📧 Public message: {public_message}")
+        console.print(f"[blue]📧 Public message:[/blue] [dim]{public_message}[/dim]")
         await self.kick_chat_member(chat_id, user_id)
 
         await self.send_message(chat_id, public_message)
@@ -204,20 +223,28 @@ class TelegramBot:
         self, chat_id: int, user_id: int, user_name: str
     ) -> None:
         """Handle member leaving the chat"""
-        print(f"👋 HANDLE_LEFT_MEMBER called for: {user_name} (ID: {user_id})")
+        console.print(
+            f"[yellow]👋 HANDLE_LEFT_MEMBER called for:[/yellow] [cyan]{user_name}[/cyan] [dim](ID: {user_id})[/dim]"
+        )
 
         # Clean up pending verification if user was pending
         if self.db.get_pending_verification(user_id):
-            print(f"🧹 Cleaning up pending verification for: {user_name}")
+            console.print(
+                f"[blue]🧹 Cleaning up pending verification for:[/blue] [cyan]{user_name}[/cyan]"
+            )
             self.db.remove_pending_verification(user_id)
 
         # Keep verified users in the database so they don't get re-restricted when rejoining
         if self.db.is_user_verified(user_id):
-            print(f"✅ Keeping verified status for: {user_name}")
+            console.print(
+                f"[green]✅ Keeping verified status for:[/green] [cyan]{user_name}[/cyan]"
+            )
 
         # Remove from blocked bots if they somehow leave
         if self.db.is_user_blocked(user_id):
-            print(f"🤖 Removing from blocked bots: {user_name}")
+            console.print(
+                f"[red]🤖 Removing from blocked bots:[/red] [cyan]{user_name}[/cyan]"
+            )
             self.db.remove_user(user_id)
 
     async def handle_new_member(
@@ -229,18 +256,22 @@ class TelegramBot:
         username: str | None = None,
     ) -> None:
         """Handle new member joining the chat"""
-        print(
-            f"🚀 HANDLE_NEW_MEMBER called with: user_name={user_name}, user_id={user_id}, is_bot={is_bot}, username={username}"
+        console.print(
+            f"[green bold]🚀 HANDLE_NEW_MEMBER called with:[/green bold] [cyan]user_name={user_name}[/cyan], [blue]user_id={user_id}[/blue], [yellow]is_bot={is_bot}[/yellow], [magenta]username={username}[/magenta]"
         )
 
         # Skip processing if this is the bot itself
         if user_id == self.bot_user_id:
-            print(f"🤖 Skipping self (this bot): {user_name}")
+            console.print(
+                f"[dim]🤖 Skipping self (this bot):[/dim] [cyan]{user_name}[/cyan]"
+            )
             return
 
         # Check if the new member is a bot FIRST (bots should NEVER be verified)
         if is_bot:
-            print(f"🤖 BOT USER DETECTED: {user_name} - Processing as bot...")
+            console.print(
+                f"[red bold]🤖 BOT USER DETECTED:[/red bold] [yellow]{user_name}[/yellow] - [red]Processing as bot...[/red]"
+            )
             # Remove from verified users if somehow they were added before
             # (Database will handle this with the blocked status)
             await self.handle_bot_user(chat_id, user_id, user_name, username)
@@ -248,23 +279,33 @@ class TelegramBot:
 
         # Only check verified users for humans
         if self.db.is_user_verified(user_id):
-            print(f"✅ Human user already verified: {user_name} - SKIPPING restriction")
+            console.print(
+                f"[green]✅ Human user already verified:[/green] [cyan]{user_name}[/cyan] - [green]SKIPPING restriction[/green]"
+            )
             return
 
-        print(f"👤 Processing human user: {user_name}")
+        console.print(
+            f"[cyan]👤 Processing human user:[/cyan] [yellow]{user_name}[/yellow]"
+        )
         counts = self.db.get_user_counts()
-        print(f"🔍 Current verified users: {counts['verified']} users")
-        print(f"🔍 Current pending users: {counts['pending_verifications']} users")
-        print(f"🔍 User {user_id} verified: {self.db.is_user_verified(user_id)}")
-        print(
-            f"🔍 User {user_id} pending: {self.db.get_pending_verification(user_id) is not None}"
+        console.print(
+            f"[blue]🔍 Current verified users:[/blue] [green]{counts['verified']} users[/green]"
+        )
+        console.print(
+            f"[blue]🔍 Current pending users:[/blue] [yellow]{counts['pending_verifications']} users[/yellow]"
+        )
+        console.print(
+            f"[blue]🔍 User {user_id} verified:[/blue] [green]{self.db.is_user_verified(user_id)}[/green]"
+        )
+        console.print(
+            f"[blue]🔍 User {user_id} pending:[/blue] [yellow]{self.db.get_pending_verification(user_id) is not None}[/yellow]"
         )
 
         # Check if user is already pending verification
         pending_data = self.db.get_pending_verification(user_id)
         if pending_data:
-            print(
-                f"⏳ User {user_name} already has pending verification - SKIPPING new captcha"
+            console.print(
+                f"[yellow]⏳ User {user_name} already has pending verification - SKIPPING new captcha[/yellow]"
             )
             # Just remind them of the existing question
             remind_message = self.settings.welcome_message.format(
@@ -302,7 +343,7 @@ class TelegramBot:
 
         # Check for admin commands
         if text.startswith("/"):
-            await self.handle_command(message)
+            await self.command_handler.handle_command(message)
             return
 
         # Check if user is pending verification
@@ -329,134 +370,69 @@ class TelegramBot:
                     ).replace("\\n", "\n"),
                 )
 
-    async def handle_command(self, message: dict[str, Any]) -> None:
-        """Handle bot commands"""
-        user_id = message["from"]["id"]
-        chat_id = message["chat"]["id"]
-        text = message.get("text", "")
-
-        # Parse command
-        command = text.split()[0].lower()
-
-        if command == "/banned" or command == "/listbanned":
-            await self.handle_list_banned_command(chat_id, user_id)
-
-    async def handle_list_banned_command(self, chat_id: int, user_id: int) -> None:
-        """Handle the /banned command to list blocked users"""
-        # Check if user is admin
-        if not await self.is_user_admin(chat_id, user_id):
-            await self.send_message(
-                chat_id, "❌ Only administrators can use this command."
-            )
-            return
-
-        # Get blocked users
-        blocked_users = self.db.get_blocked_users()
-
-        if not blocked_users:
-            await self.send_message(chat_id, "✅ No banned users found.")
-            return
-
-        # Format the message
-        message_lines = ["🚫 Banned Users List:\n\n"]
-
-        for i, user in enumerate(blocked_users, 1):
-            username_display = (
-                f"@{user['username']}" if user["username"] else "sin_username"
-            )
-            user_line = f"{i}. {user['user_name']} ({username_display})\n"
-            user_line += f"   ID: {user['user_id']}\n"
-            user_line += f"   Banned: {user['created_at'][:19]}\n\n"
-            message_lines.append(user_line)
-
-        # Split message if too long (Telegram limit is 4096 characters)
-        full_message = "".join(message_lines)
-
-        if len(full_message) <= 4096:
-            await self.send_message(chat_id, full_message)
-        else:
-            # Split into chunks
-            chunks = []
-            current_chunk = "🚫 Banned Users List:\n\n"
-
-            for line in message_lines[1:]:  # Skip the header
-                if len(current_chunk + line) > 4000:  # Leave some buffer
-                    chunks.append(current_chunk)
-                    current_chunk = line
-                else:
-                    current_chunk += line
-
-            if current_chunk:
-                chunks.append(current_chunk)
-
-            # Send chunks
-            for i, chunk in enumerate(chunks):
-                if i == 0:
-                    await self.send_message(chat_id, chunk)
-                else:
-                    await self.send_message(
-                        chat_id, f"🚫 Banned Users List (continued):\n\n{chunk}"
-                    )
-
     async def handle_update(self, update: dict[str, Any]) -> None:
         """Handle a single update from Telegram"""
-        print(f"🔍 Raw update: {update}")
+        console.print(f"[dim]🔍 Raw update: {update}[/dim]")
 
         if "message" in update:
             message = update["message"]
-            print(f"📝 Message received: {message}")
+            console.print(f"[dim]📝 Message received: {message}[/dim]")
 
             # Check for left chat members
             if "left_chat_member" in message:
-                print("👋 LEFT CHAT MEMBER DETECTED!")
+                console.print("[yellow]👋 LEFT CHAT MEMBER DETECTED![/yellow]")
                 chat_id = message["chat"]["id"]
-                print(f"🏠 Chat ID: {chat_id}")
+                console.print(f"[blue]🏠 Chat ID:[/blue] [cyan]{chat_id}[/cyan]")
 
                 member = message["left_chat_member"]
                 user_id = member["id"]
                 user_name = member.get("first_name", "User")
-                print(f"🔍 Left member: {user_name} (ID: {user_id})")
-                print(f"📋 Full member data: {member}")
+                console.print(
+                    f"[blue]🔍 Left member:[/blue] [yellow]{user_name}[/yellow] [dim](ID: {user_id})[/dim]"
+                )
+                console.print(f"[dim]📋 Full member data: {member}[/dim]")
                 await self.handle_left_member(chat_id, user_id, user_name)
 
             # Check for new chat members
             elif "new_chat_members" in message:
-                print("👥 NEW CHAT MEMBERS DETECTED!")
+                console.print("[green]👥 NEW CHAT MEMBERS DETECTED![/green]")
                 chat_id = message["chat"]["id"]
-                print(f"🏠 Chat ID: {chat_id}")
+                console.print(f"[blue]🏠 Chat ID:[/blue] [cyan]{chat_id}[/cyan]")
 
                 for member in message["new_chat_members"]:
                     user_id = member["id"]
                     user_name = member.get("first_name", "User")
                     is_bot = member.get("is_bot", False)
                     username = member.get("username")
-                    print(
-                        f"🔍 New member: {user_name} (ID: {user_id}, is_bot: {is_bot}, username: {username})"
+                    console.print(
+                        f"[blue]🔍 New member:[/blue] [yellow]{user_name}[/yellow] [dim](ID: {user_id}, is_bot: {is_bot}, username: {username})[/dim]"
                     )
-                    print(f"📋 Full member data: {member}")
+                    console.print(f"[dim]📋 Full member data: {member}[/dim]")
                     await self.handle_new_member(
                         chat_id, user_id, user_name, is_bot, username
                     )
 
             # Handle regular messages
             else:
-                print(
-                    f"💬 Regular message from user: {message.get('from', {}).get('first_name', 'Unknown')}"
+                console.print(
+                    f"[blue]💬 Regular message from user:[/blue] [cyan]{message.get('from', {}).get('first_name', 'Unknown')}[/cyan]"
                 )
                 await self.handle_message(message)
         else:
-            print(f"❓ Update without message: {update}")
+            console.print(
+                f"[yellow]❓ Update without message:[/yellow] [dim]{update}[/dim]"
+            )
 
     async def run(self) -> None:
         """Main bot loop"""
-        print(self.settings.bot_starting_message)
+        console.print(f"[green]{self.settings.bot_starting_message}[/green]")
 
         # Get bot's own user ID to avoid processing itself
         if not self.bot_user_id:
             bot_info = await self.get_me()
             self.bot_user_id = bot_info.get("id")
-            print(
-                f"🤖 Bot initialized: {bot_info.get('first_name', 'Unknown')} (ID: {self.bot_user_id})"
+            console.print(
+                f"[green]🤖 Bot initialized:[/green] [cyan]{bot_info.get('first_name', 'Unknown')}[/cyan] [dim](ID: {self.bot_user_id})[/dim]"
             )
 
         offset = 0
@@ -467,11 +443,13 @@ class TelegramBot:
                     updates = await self.get_updates(offset)
 
                     if updates:
-                        print(f"📨 Received {len(updates)} updates")
+                        console.print(
+                            f"[blue]📨 Received {len(updates)} updates[/blue]"
+                        )
 
                     for update in updates:
-                        print(
-                            f"🔄 Processing update: {update.get('update_id', 'unknown')}"
+                        console.print(
+                            f"[blue]🔄 Processing update:[/blue] [cyan]{update.get('update_id', 'unknown')}[/cyan]"
                         )
                         await self.handle_update(update)
                         offset = update["update_id"] + 1
@@ -480,15 +458,17 @@ class TelegramBot:
                         await asyncio.sleep(1)
 
                 except KeyboardInterrupt:
-                    print("\n🛑 Bot stopping...")
+                    console.print("\n[red]🛑 Bot stopping...[/red]")
                     break
                 except Exception as e:
-                    print(f"Error: {type(e).__name__}: {e}")
+                    console.print(
+                        f"[red]Error: {type(e).__name__}:[/red] [dim]{e}[/dim]"
+                    )
                     import traceback
 
                     traceback.print_exc()
                     await asyncio.sleep(5)
         except KeyboardInterrupt:
-            print("\n🛑 Bot stopped by user")
+            console.print("\n[red]🛑 Bot stopped by user[/red]")
         finally:
-            print("👋 Bot shutdown complete")
+            console.print("[blue]👋 Bot shutdown complete[/blue]")

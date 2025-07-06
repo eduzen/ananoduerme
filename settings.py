@@ -16,4 +16,6 @@ class Settings(BaseSettings):
     bot_admin_notification: str = "⚠️ ALERTA: Bot detectado y bloqueado\n\nUsuario: {user_name}\nUsername: @{username}\nID: {user_id}\n\nEl bot ha sido restringido automáticamente."
     database_path: str = "db.sqlite3"
 
+    logfire_token: str = ""
+
     model_config = SettingsConfigDict(env_file=".env", env_file_encoding="utf-8")

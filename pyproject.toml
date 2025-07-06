@@ -6,7 +6,9 @@ readme = "README.md"
 requires-python = ">=3.13"
 dependencies = [
     "httpx>=0.28.1",
+    "logfire[asyncio,httpx,sqlite3]>=3.22.0",
     "pydantic-settings>=2.10.1",
+    "rich>=14.0.0",
 ]
 
 [dependency-groups]
