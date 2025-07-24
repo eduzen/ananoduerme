@@ -57,13 +57,19 @@ class TelegramBot:
             return result.get("result", {})
 
     async def send_message(
-        self, chat_id: int, text: str, reply_markup: dict[str, Any] | None = None
+        self,
+        chat_id: int,
+        text: str,
+        reply_markup: dict[str, Any] | None = None,
+        disable_notification: bool = False,
     ) -> dict[str, Any]:
         """Send a message to a chat"""
         async with httpx.AsyncClient() as client:
             data = {"chat_id": chat_id, "text": text}
             if reply_markup:
                 data["reply_markup"] = reply_markup
+            if disable_notification:
+                data["disable_notification"] = True
 
             response = await client.post(f"{self.base_url}/sendMessage", json=data)
             return response.json()
@@ -200,16 +206,26 @@ class TelegramBot:
 
         # Format username for display
         username_display = username if username else "sin_username"
-        console.print("[blue]📢 Sending public bot detection message...[/blue]")
-
-        # Send public message about bot detection
-        public_message = self.settings.bot_detected_message.format(
-            user_name=user_name, username=username_display
-        )
-        console.print(f"[blue]📧 Public message:[/blue] [dim]{public_message}[/dim]")
         await self.kick_chat_member(chat_id, user_id)
 
-        await self.send_message(chat_id, public_message)
+        # Send notification to admin chat if configured
+        if self.settings.admin_chat_id:
+            admin_message = self.settings.bot_admin_notification.format(
+                user_name=user_name, username=username_display, user_id=user_id
+            )
+            try:
+                await self.send_message(
+                    self.settings.admin_chat_id,
+                    admin_message,
+                    disable_notification=True,
+                )
+                console.print(
+                    f"[green]✅ Admin notification sent to chat {self.settings.admin_chat_id}[/green]"
+                )
+            except Exception as e:
+                console.print(
+                    f"[red]❌ Failed to send admin notification:[/red] [dim]{e}[/dim]"
+                )
 
     def generate_captcha(self) -> tuple[str, str]:
         """Generate a simple math captcha question"""
@@ -341,10 +357,10 @@ class TelegramBot:
         if is_bot:
             return
 
-        # Check for admin commands
-        if text.startswith("/"):
-            await self.command_handler.handle_command(message)
-            return
+        # Check for admin commands (disabled)
+        # if text.startswith("/"):
+        #     await self.command_handler.handle_command(message)
+        #     return
 
         # Check if user is pending verification
         user_data = self.db.get_pending_verification(user_id)
