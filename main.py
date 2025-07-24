@@ -1,4 +1,5 @@
 import asyncio
+import logging
 import logfire
 from rich.console import Console
 from settings import Settings
@@ -8,11 +9,12 @@ console = Console()
 settings = Settings()
 
 # configure logfire
-logfire.configure(token=settings.logfire_token, console_log_level="INFO")
+logfire.configure(token=settings.logfire_token)
 logfire.instrument_sqlite3()
-logfire.instrument_httpx(
-    capture_headers=False, capture_request_body=False, capture_response_body=False
-)
+logfire.instrument_httpx()
+
+# Reduce httpx logging verbosity
+logging.getLogger("httpx").setLevel(logging.WARNING)
 
 
 async def main() -> None:
