@@ -8,9 +8,11 @@ console = Console()
 settings = Settings()
 
 # configure logfire
-logfire.configure(token=settings.logfire_token)
+logfire.configure(token=settings.logfire_token, console_log_level="INFO")
 logfire.instrument_sqlite3()
-logfire.instrument_httpx()
+logfire.instrument_httpx(
+    capture_headers=False, capture_request_body=False, capture_response_body=False
+)
 
 
 async def main() -> None:
